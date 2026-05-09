@@ -1,4 +1,4 @@
-name: zdm_crawler
+name: zdm_crawler_v2
 
 on:
   #将下面两行代码取消注释
