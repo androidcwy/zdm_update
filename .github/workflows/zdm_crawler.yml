@@ -6,17 +6,23 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
-      # 这个是手动触发工作流界面上的选项, 选择True时,即使未满足COMMIT_THRESHOLD提交阈值,也会生成提交记录
+      # 手动/调试运行入口. 执行内容与定时任务一致; 选择True时会立即尝试生成提交记录
       should_commit:
-        description: '立即生成提交记录'
+        description: '手动/调试运行时立即尝试生成提交记录'
         type: boolean
         default: False
+
+concurrency:
+  group: zdm-crawler-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
     - name: Set up JDK
       uses: actions/setup-java@v3
       with:
@@ -54,6 +60,10 @@ jobs:
         if [ -f database_old.db ]; then
           cp database_old.db database.db
         fi
+        if [ -f database.db ]; then
+          echo "Database before run:"
+          sqlite3 database.db "SELECT COUNT(*) AS total, SUM(CASE WHEN pushed=1 THEN 1 ELSE 0 END) AS pushed, SUM(CASE WHEN pushed=0 THEN 1 ELSE 0 END) AS unpushed FROM ZDM;"
+        fi
     # 打包项目
     - name: Build with Maven
       run: |
@@ -82,31 +92,41 @@ jobs:
         # true:下载阶段打印出详细信息(待推送的优惠信息列表,过滤时使用的黑白词),因文本量比较大,在调通项目后可以改为false
         detail: false
       run: java -jar zdm.jar
-    # 检查数据库中新增行数是否超过提交阈值
+    # 检查数据库是否发生变化
     - name: check database changes
       id: commit_check
-      env:
-        # 提交阈值,0代表每次运行都会生成commit记录
-        COMMIT_THRESHOLD: 50
       run: |
         LAST_COUNT=${{ steps.db_copy.outputs.last_count }}
         CURRENT_COUNT=$(sqlite3 database.db "SELECT COUNT(*) FROM ZDM;")
         NEW_ROWS=$((CURRENT_COUNT - LAST_COUNT))
         echo "Last count: $LAST_COUNT , Current count: $CURRENT_COUNT , New rows: $NEW_ROWS"
-        if [ $NEW_ROWS -ge $COMMIT_THRESHOLD ]; then
+        echo "Database after run:"
+        sqlite3 database.db "SELECT COUNT(*) AS total, SUM(CASE WHEN pushed=1 THEN 1 ELSE 0 END) AS pushed, SUM(CASE WHEN pushed=0 THEN 1 ELSE 0 END) AS unpushed FROM ZDM;"
+        if git diff --quiet -- database.db; then
+          echo "should_commit=false" >> $GITHUB_OUTPUT
+        else
           echo "should_commit=true" >> $GITHUB_OUTPUT
         fi
         cp database.db database_old.db
-    # 保存已推送和暂未推送的优惠信息
-    - name: git add files
-      if: steps.commit_check.outputs.should_commit == 'true' || inputs.should_commit == 'true'
-      run: |
-        git add database.db
     - name: commit & push
       if: steps.commit_check.outputs.should_commit == 'true' || inputs.should_commit == 'true'
-      uses: actions-go/push@master
-      with:
-        author-email: 'actions@github.com'
-        author-name: 'GitHub Actions'
-        commit-message: 'update articles'
-        token: ${{secrets.GIT_TOKEN}}
+      env:
+        GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+      run: |
+        git config user.email "actions@github.com"
+        git config user.name "GitHub Actions"
+        git add database.db
+
+        if git diff --cached --quiet -- database.db; then
+          echo "No database changes to commit."
+          exit 0
+        fi
+
+        if [ -z "$GIT_TOKEN" ]; then
+          echo "GIT_TOKEN is not configured. Please add a repository secret named GIT_TOKEN with write access to this repository."
+          exit 1
+        fi
+
+        git commit -m "update articles"
+        git remote set-url origin "https://x-access-token:${GIT_TOKEN}@github.com/${{ github.repository }}.git"
+        git push origin "HEAD:${GITHUB_REF_NAME}"

@@ -19,7 +19,7 @@
 | EMAILACCOUNT  | 选填 | 接收优惠信息的邮箱                                                                                                                            |
 | EMAILPASSWORD | 选填 | 邮箱的授权码,[参考qq邮箱的这篇文档](https://service.mail.qq.com/cgi-bin/help?subtype=1&&id=28&&no=1001256)                                          |
 | SPT           | 选填 | WxPusher极简推送使用的身份ID,[参考WxPusher文档](https://wxpusher.zjiecode.com/docs/#/?id=spt)                                                     |
-| GIT_TOKEN     | 必填 | [参考这篇文章的1-6步骤](https://zhuanlan.zhihu.com/p/501872439),只勾选repo的权限,Expiration设置为No Expiration                                         |
+| GIT_TOKEN     | 必填 | 用于将`database.db`提交回当前仓库. classic PAT需要勾选`repo`权限; fine-grained PAT需要授予当前仓库`Contents: Read and write`权限,并确保未过期 |
 | COOKIE        | 选填 | 请求什么值得买服务器时请求头携带的cookie参数. 不填的话会用selenium模拟浏览器行为自动获取cookie(推荐), 自动的代码失效时再考虑填写固定的cookie值(请使用F12查看cookie值, 并确保不要将cookie明文泄漏出去) |
 
 <img src="https://raw.githubusercontent.com/lx1169732264/Images/master/zdmActions.png" width = "70%" height = "70%" align=center />
@@ -45,7 +45,7 @@
             emailPort: 
 ```
 
-* 手动触发一次,测试下能不能跑通
+* 手动触发一次,测试下能不能跑通. 手动/调试运行与定时运行执行内容一致,会完整执行构建、爬取、过滤、推送、数据库检查和提交逻辑. 正常情况下不需要勾选`立即生成提交记录`; 若`database.db`发生变化,工作流会自动提交. 勾选后会立即尝试提交,没有实际数据库变更时会安全跳过
 
 <img src="https://raw.githubusercontent.com/lx1169732264/Images/master/runWorkFlow.png" width = "70%" height = "70%" align=center />
 
@@ -61,18 +61,21 @@
 * [我自己也fork了一份](https://github.com/PhantomStrikers/zdm),每天都在自动运行的,可以通过这个项目的actions运行记录判断这个项目是否还能work
 
 ### database.db文件的缓存机制
-`./.github/workflows/zdm_crawler.yml`添加了缓存机制, 当`database.db`数据库中新增行数超过`COMMIT_THRESHOLD`提交阈值后, 就会对该文件自动生成提交记录   
-如果你过滤条件很宽松, 推送数据频繁, `COMMIT_THRESHOLD`就可以适当调大一点, 反之就小一点
-通过调整`COMMIT_THRESHOLD`可以降低提交的频率, 避免仓库过于臃肿,
+`./.github/workflows/zdm_crawler.yml`添加了缓存机制, 每次任务运行结束后会检查`database.db`是否发生变化.
+只要`database.db`发生变化, 就会自动生成提交记录, 确保已推送的优惠信息能稳定保存, 避免下次运行重复推送同一篇文章.
 
 ```yaml
     - name: check database changes
       id: commit_check
-      env:
-        COMMIT_THRESHOLD: 
+      run: |
+        if git diff --quiet -- database.db; then
+          echo "should_commit=false" >> $GITHUB_OUTPUT
+        else
+          echo "should_commit=true" >> $GITHUB_OUTPUT
+        fi
 ```
 
-另外在手动触发工作流时, 提供了'立即生成提交记录'的入口   
+另外在手动/调试运行工作流时, 提供了'立即生成提交记录'的入口. 该入口不会跳过任何正常环节,仍可能真实发送邮件或微信推送,也可能在数据库变化时提交`database.db`.
 <img src="https://github.com/lx1169732264/Images/blob/master/%E6%89%8B%E5%8A%A8%E5%B7%A5%E4%BD%9C%E6%B5%81UI.png?raw=true" width = "50%" height = "50%" align=center />
 
 
@@ -97,6 +100,9 @@
 
 | 日期         | 说明                                                                                                                                                                                                          |
 |------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 2026/05/12 | 明确手动触发入口可作为调试运行使用, 且执行内容与定时运行保持一致                                                                                                                                                                      |
+| 2026/05/12 | 将工作流中的推送逻辑从第三方action改为显式`git commit`/`git push`, 继续使用`GIT_TOKEN`, 以便在认证失败时给出更明确的错误信息                                                                                                      |
+| 2026/05/11 | 调整`database.db`提交逻辑, 数据库发生变化时即生成提交记录, 避免缓存未恢复最新状态导致跨次重复推送                                                                                                                                                      |
 | 2026/04/18 | [修复了Github Actions运行过程中同时存在两个版本的Chrome导致的错误](https://github.com/browser-actions/setup-chrome/issues/619#issuecomment-2601061935). 虽然CI的镜像已经安装了Chrome/Chrome Driver, 但为了能持续与selenium组件版本兼容, 工作流中会指定版本号重新安装一次 |
 | 2026/03/26 | 调整了安装ChromeDriver的逻辑                                                                                                                                                                                        |
 | 2026/01/25 | 新增环境变量`COMMIT_THRESHOLD`,避免频繁生成提交记录                                                                                                                                                                         |
@@ -112,5 +118,3 @@
 | 2024/10/22 | 邮箱登陆切换到 stmp ssl 465 端口模式以解决 QQ 邮箱不再支持 stmp 明文模式问题                                                                                                                                                          |
 | 2023/5/4   | 已推送优惠信息按日期在logs文件夹下归类记录.避免单个文件记录数据量过大的问题                                                                                                                                                                    |
 | 2023/1/31  | 实现定时按什么值得买的好价排行榜,收集优惠信息并推送至邮箱的功能                                                                                                                                                                            |
-
-
